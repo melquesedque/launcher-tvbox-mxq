@@ -1,0 +1,22 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.leve.launcher'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.leve.launcher"
+        minSdk 21
+        targetSdk 28
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+    }
+}
