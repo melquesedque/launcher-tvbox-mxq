@@ -71,8 +71,8 @@ public class MainActivity extends Activity {
     };
     // Clima (Open-Meteo, gratis e sem chave). Coloque false para desligar.
     private static final boolean MOSTRAR_CLIMA = true;
-    private static final double LATITUDE = -8.59;
-    private static final double LONGITUDE = -35.11;
+    private static final double LATITUDE = -8.683;
+    private static final double LONGITUDE = -35.592;
     private static final long CLIMA_INTERVALO = 30L * 60L * 1000L;
     private static final int COLUNAS = 6;
     private static final int ICON_PX = 96;
