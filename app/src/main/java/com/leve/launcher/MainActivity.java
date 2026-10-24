@@ -27,6 +27,8 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.provider.Settings;
+import android.text.TextPaint;
+import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -60,11 +62,19 @@ public class MainActivity extends Activity {
 
     // ===================== CONFIGURACOES (edite aqui) =====================
     // Favoritos iniciais do dock (separados por virgula; "|" = alternativas, usa o primeiro instalado).
-    // Depois voce muda pelo proprio launcher: botao "+" e segurar OK sobre um favorito ou app.
+    // Sao so um ponto de partida: os 5 espacos do dock sao livres (apertar OK em um espaco vazio,
+    // ou segurar OK sobre um favorito/app para trocar, remover ou mover).
     private static final String FAVORITOS_PADRAO =
             "com.google.android.youtube.tv|com.google.android.youtube.googletv,"
             + "com.global.unitviptv,com.spotify.music";
-    private static final int MAX_FAVORITOS = 5;
+    private static final int SLOTS = 5;
+    // Apps que aparecem com o BANNER no dock. Qualquer outro app aparece com icone e nome.
+    private static final String[] BANNER_PKGS = {
+            "com.google.android.youtube.tv",
+            "com.google.android.youtube.googletv",
+            "com.global.unitviptv",
+            "com.spotify.music"
+    };
     // Apps que nao aparecem na grade "Aplicativos"
     private static final String[] HIDDEN = {
             "com.droidlogic.mboxlauncher",
@@ -85,10 +95,12 @@ public class MainActivity extends Activity {
     private static class Item { String label, pkg; ComponentName cn; Bitmap icon; }
 
     private static class Fav {
-        String[] pkgs;
+        String pkg;          // null = espaco vazio
         Intent intent;
+        Bitmap bitmap;
         FrameLayout tile;
         ImageView img;
+        TextView mais;
     }
 
     private final List<Item> items = new ArrayList<Item>();
@@ -106,7 +118,7 @@ public class MainActivity extends Activity {
     private long ultimoClima = 0;
     private SharedPreferences prefs;
     private LinearLayout linha;
-    private FrameLayout plusTile;
+    private int slotAlvo = -1;
     private TextView tituloGrade;
     private boolean modoEscolher = false;
     private int focoPendente = -1;
@@ -213,7 +225,7 @@ public class MainActivity extends Activity {
         });
         linha.addView(coluna(btnApps, "Aplicativos"));
 
-        reconstruirDock();
+        montarDock();
         FrameLayout.LayoutParams ll = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.LEFT);
         ll.leftMargin = px(100);
         ll.bottomMargin = px(100);
@@ -250,40 +262,67 @@ public class MainActivity extends Activity {
         return c;
     }
 
-    // ------------------------------------------------------------ favoritos (dock)
+    // ------------------------------------------------------------ favoritos (5 espacos livres)
     private void lerFavoritos() {
-        String txt = prefs.getString("favs", FAVORITOS_PADRAO);
+        PackageManager pm = getPackageManager();
+        String guardado = prefs.getString("slots", null);
+        String[] partes = guardado != null
+                ? guardado.split(",", -1)
+                : prefs.getString("favs", FAVORITOS_PADRAO).split(","); // formato da versao anterior
         favs.clear();
-        for (String parte : txt.split(",")) {
-            if (parte.trim().length() == 0) continue;
+        for (int i = 0; i < SLOTS; i++) {
             Fav f = new Fav();
-            f.pkgs = parte.trim().split("\\|");
+            if (i < partes.length) {
+                String p = partes[i].trim();
+                if (p.indexOf('|') >= 0) { // alternativas: usa a primeira instalada
+                    String[] alt = p.split("\\|");
+                    p = alt[0];
+                    for (String a : alt) {
+                        if (pm.getLaunchIntentForPackage(a) != null
+                                || pm.getLeanbackLaunchIntentForPackage(a) != null) { p = a; break; }
+                    }
+                }
+                f.pkg = p.length() == 0 ? null : p;
+            }
             favs.add(f);
         }
+        if (guardado == null) salvarFavoritos();
     }
 
     private void salvarFavoritos() {
         StringBuilder sb = new StringBuilder();
-        for (Fav f : favs) {
-            if (sb.length() > 0) sb.append(',');
-            for (int i = 0; i < f.pkgs.length; i++) {
-                if (i > 0) sb.append('|');
-                sb.append(f.pkgs[i]);
-            }
+        for (int i = 0; i < favs.size(); i++) {
+            if (i > 0) sb.append(',');
+            String p = favs.get(i).pkg;
+            if (p != null) sb.append(p);
         }
-        prefs.edit().putString("favs", sb.toString()).apply();
+        prefs.edit().putString("slots", sb.toString()).apply();
+    }
+
+    private Fav acharFav(String pkg) {
+        for (Fav f : favs) if (pkg.equals(f.pkg)) return f;
+        return null;
     }
 
     private boolean isFav(String pkg) { return acharFav(pkg) != null; }
 
-    private Fav acharFav(String pkg) {
-        for (Fav f : favs) {
-            for (String p : f.pkgs) if (p.equals(pkg)) return f;
-        }
-        return null;
-    }
-
     private void toast(String msg) { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show(); }
+
+    /** Atualiza a aparencia do espaco: vazio (+) ou preenchido (banner/icone). */
+    private void aplicarSlot(Fav f) {
+        boolean cheio = f.pkg != null && f.intent != null && f.bitmap != null;
+        f.img.setImageBitmap(cheio ? f.bitmap : null);
+        f.mais.setVisibility(cheio ? View.GONE : View.VISIBLE);
+        if (cheio) {
+            f.tile.setBackgroundDrawable(null);
+        } else {
+            GradientDrawable off = new GradientDrawable();
+            off.setColor(0xFF101010);
+            off.setStroke(px(3), 0xFF555555);
+            off.setCornerRadius(px(14));
+            f.tile.setBackgroundDrawable(off);
+        }
+    }
 
     private void criarTile(final Fav f) {
         f.tile = new FrameLayout(this);
@@ -292,6 +331,13 @@ public class MainActivity extends Activity {
         f.img = new ImageView(this);
         f.img.setScaleType(ImageView.ScaleType.FIT_XY);
         f.tile.addView(f.img, new FrameLayout.LayoutParams(-1, -1));
+        f.mais = new TextView(this);
+        f.mais.setText("+");
+        f.mais.setTextColor(0xFFBBBBBB);
+        f.mais.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(80));
+        f.mais.setGravity(Gravity.CENTER);
+        f.mais.setIncludeFontPadding(false);
+        f.tile.addView(f.mais, new FrameLayout.LayoutParams(-1, -1));
         StateListDrawable sl = new StateListDrawable();
         GradientDrawable on = new GradientDrawable();
         on.setColor(Color.TRANSPARENT);
@@ -300,103 +346,83 @@ public class MainActivity extends Activity {
         sl.addState(new int[]{ android.R.attr.state_focused }, on);
         sl.addState(new int[]{}, new ColorDrawable(Color.TRANSPARENT));
         f.tile.setForeground(sl);
-        f.tile.setVisibility(View.GONE);
         f.tile.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { if (f.intent != null) abrir(f.intent); }
+            @Override public void onClick(View v) {
+                if (f.pkg != null && f.intent != null) abrir(f.intent);
+                else escolher(favs.indexOf(f));
+            }
         });
         f.tile.setOnLongClickListener(new View.OnLongClickListener() {
-            @Override public boolean onLongClick(View v) { menuDock(f); return true; }
-        });
-    }
-
-    private void criarPlus() {
-        plusTile = new FrameLayout(this);
-        plusTile.setFocusable(true);
-        plusTile.setClickable(true);
-        TextView t = new TextView(this);
-        t.setText("+");
-        t.setTextColor(0xFFBBBBBB);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(80));
-        t.setGravity(Gravity.CENTER);
-        t.setIncludeFontPadding(false);
-        plusTile.addView(t, new FrameLayout.LayoutParams(-1, -1));
-        StateListDrawable sl = new StateListDrawable();
-        GradientDrawable on = new GradientDrawable();
-        on.setColor(0x33FFFFFF);
-        on.setStroke(px(5), Color.WHITE);
-        on.setCornerRadius(px(14));
-        GradientDrawable off = new GradientDrawable();
-        off.setColor(0xFF101010);
-        off.setStroke(px(3), 0xFF555555);
-        off.setCornerRadius(px(14));
-        sl.addState(new int[]{ android.R.attr.state_focused }, on);
-        sl.addState(new int[]{}, off);
-        plusTile.setBackgroundDrawable(sl);
-        plusTile.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                if (favs.size() >= MAX_FAVORITOS) {
-                    toast("Dock cheio (m\u00E1ximo " + MAX_FAVORITOS + ")");
-                    return;
-                }
-                modoEscolher = true;
-                mostrarGrade();
+            @Override public boolean onLongClick(View v) {
+                if (f.pkg != null && f.intent != null) menuDock(f);
+                else escolher(favs.indexOf(f));
+                return true;
             }
         });
     }
 
-    private void reconstruirDock() {
-        while (linha.getChildCount() > 1) linha.removeViewAt(1);
+    private void montarDock() {
         for (int i = 0; i < favs.size(); i++) {
             Fav f = favs.get(i);
-            if (f.tile == null) criarTile(f);
+            criarTile(f);
+            aplicarSlot(f);
             LinearLayout.LayoutParams lt = new LinearLayout.LayoutParams(px(230), px(122));
             lt.leftMargin = px(i == 0 ? 38 : 31);
             linha.addView(f.tile, lt);
         }
-        if (plusTile == null) criarPlus();
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(230), px(122));
-        lp.leftMargin = px(favs.isEmpty() ? 38 : 31);
-        linha.addView(plusTile, lp);
-        plusTile.setVisibility(favs.size() >= MAX_FAVORITOS ? View.GONE : View.VISIBLE);
     }
 
-    private void adicionarFav(String pkg) {
-        if (isFav(pkg)) { toast("J\u00E1 est\u00E1 no dock"); return; }
-        if (favs.size() >= MAX_FAVORITOS) {
-            toast("Dock cheio (m\u00E1ximo " + MAX_FAVORITOS + ")");
-            return;
-        }
-        Fav f = new Fav();
-        f.pkgs = new String[]{ pkg };
-        favs.add(f);
+    /** Abre a lista de apps para escolher qual vai ocupar o espaco idx. */
+    private void escolher(int idx) {
+        if (idx < 0) return;
+        modoEscolher = true;
+        slotAlvo = idx;
+        mostrarGrade();
+    }
+
+    private void atribuirSlot(int idx, String pkg) {
+        if (idx < 0 || idx >= favs.size()) return;
+        Fav ja = acharFav(pkg);
+        if (ja != null && favs.indexOf(ja) != idx) { toast("J\u00E1 est\u00E1 no dock"); return; }
+        Fav f = favs.get(idx);
+        f.pkg = pkg;
+        f.intent = null;
+        f.bitmap = null;
+        aplicarSlot(f);
         salvarFavoritos();
-        reconstruirDock();
-        focoPendente = favs.size() - 1;
+        focoPendente = idx;
         carregar();
     }
 
-    private void removerFav(Fav f) {
-        int idx = favs.indexOf(f);
-        if (idx < 0) return;
-        favs.remove(idx);
-        salvarFavoritos();
-        reconstruirDock();
-        if (homeLayer.getVisibility() == View.VISIBLE) {
-            if (favs.isEmpty()) plusTile.requestFocus();
-            else favs.get(Math.min(idx, favs.size() - 1)).tile.requestFocus();
+    private void adicionarNoPrimeiroVazio(String pkg) {
+        if (isFav(pkg)) { toast("J\u00E1 est\u00E1 no dock"); return; }
+        for (int i = 0; i < favs.size(); i++) {
+            if (favs.get(i).pkg == null) { atribuirSlot(i, pkg); return; }
         }
+        toast("Dock cheio: remova ou troque um favorito");
     }
 
-    private void moverFav(final Fav f, int delta) {
+    private void removerFav(Fav f) {
+        f.pkg = null;
+        f.intent = null;
+        f.bitmap = null;
+        aplicarSlot(f);
+        salvarFavoritos();
+        if (homeLayer.getVisibility() == View.VISIBLE) f.tile.requestFocus();
+    }
+
+    private void moverFav(Fav f, int delta) {
         int idx = favs.indexOf(f);
         int j = idx + delta;
         if (idx < 0 || j < 0 || j >= favs.size()) return;
-        Collections.swap(favs, idx, j);
+        Fav b = favs.get(j);
+        String p = f.pkg; f.pkg = b.pkg; b.pkg = p;
+        Intent in = f.intent; f.intent = b.intent; b.intent = in;
+        Bitmap bm = f.bitmap; f.bitmap = b.bitmap; b.bitmap = bm;
+        aplicarSlot(f);
+        aplicarSlot(b);
         salvarFavoritos();
-        reconstruirDock();
-        f.tile.post(new Runnable() {
-            @Override public void run() { f.tile.requestFocus(); }
-        });
+        b.tile.requestFocus();
     }
 
     /** Menu ao segurar OK em um favorito do dock. */
@@ -404,17 +430,18 @@ public class MainActivity extends Activity {
         int idx = favs.indexOf(f);
         final List<String> nomes = new ArrayList<String>();
         final List<Integer> cod = new ArrayList<Integer>();
-        nomes.add("Remover do dock");
-        cod.add(0);
-        if (idx > 0) { nomes.add("Mover para a esquerda"); cod.add(1); }
-        if (idx < favs.size() - 1) { nomes.add("Mover para a direita"); cod.add(2); }
+        nomes.add("Trocar app"); cod.add(0);
+        nomes.add("Remover do dock"); cod.add(1);
+        if (idx > 0) { nomes.add("Mover para a esquerda"); cod.add(2); }
+        if (idx < favs.size() - 1) { nomes.add("Mover para a direita"); cod.add(3); }
         new AlertDialog.Builder(this)
                 .setTitle("Dock")
                 .setItems(nomes.toArray(new String[0]), new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int which) {
                         int c = cod.get(which);
-                        if (c == 0) removerFav(f);
-                        else if (c == 1) moverFav(f, -1);
+                        if (c == 0) escolher(favs.indexOf(f));
+                        else if (c == 1) removerFav(f);
+                        else if (c == 2) moverFav(f, -1);
                         else moverFav(f, 1);
                     }
                 }).show();
@@ -430,7 +457,7 @@ public class MainActivity extends Activity {
                     @Override public void onClick(DialogInterface d, int which) {
                         if (which == 0) {
                             if (fav) removerFav(acharFav(it.pkg));
-                            else adicionarFav(it.pkg);
+                            else adicionarNoPrimeiroVazio(it.pkg);
                         } else {
                             try {
                                 startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
@@ -473,7 +500,7 @@ public class MainActivity extends Activity {
             @Override public void onItemClick(AdapterView<?> p, View v, int pos, long id) {
                 Item it = items.get(pos);
                 if (modoEscolher) {
-                    adicionarFav(it.pkg);
+                    atribuirSlot(slotAlvo, it.pkg);
                     mostrarInicio();
                     return;
                 }
@@ -493,7 +520,7 @@ public class MainActivity extends Activity {
     }
 
     private void mostrarGrade() {
-        tituloGrade.setText(modoEscolher ? "Escolha o app para adicionar ao dock" : "Aplicativos");
+        tituloGrade.setText(modoEscolher ? "Escolha o app para este espa\u00E7o" : "Aplicativos");
         homeLayer.setVisibility(View.GONE);
         gridLayer.setVisibility(View.VISIBLE);
         grid.requestFocus();
@@ -508,7 +535,7 @@ public class MainActivity extends Activity {
 
     private void focarInicio() {
         for (Fav f : favs) {
-            if (f.tile.getVisibility() == View.VISIBLE) { f.tile.requestFocus(); return; }
+            if (f.pkg != null && f.intent != null) { f.tile.requestFocus(); return; }
         }
         btnApps.requestFocus();
     }
@@ -548,6 +575,8 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------ carregar apps
     private void carregar() {
         final List<Fav> snap = new ArrayList<Fav>(favs);
+        final String[] pkgs = new String[snap.size()];
+        for (int i = 0; i < pkgs.length; i++) pkgs[i] = snap.get(i).pkg;
         new Thread(new Runnable() {
             @Override public void run() {
                 PackageManager pm = getPackageManager();
@@ -578,14 +607,13 @@ public class MainActivity extends Activity {
                 final Bitmap[] fotos = new Bitmap[snap.size()];
                 final Intent[] intents = new Intent[snap.size()];
                 for (int i = 0; i < snap.size(); i++) {
-                    for (String p : snap.get(i).pkgs) {
-                        Intent li = pm.getLeanbackLaunchIntentForPackage(p);
-                        if (li == null) li = pm.getLaunchIntentForPackage(p);
-                        if (li != null) {
-                            intents[i] = li;
-                            fotos[i] = montarTile(pm, p);
-                            break;
-                        }
+                    String p = pkgs[i];
+                    if (p == null) continue;
+                    Intent li = pm.getLeanbackLaunchIntentForPackage(p);
+                    if (li == null) li = pm.getLaunchIntentForPackage(p);
+                    if (li != null) {
+                        intents[i] = li;
+                        fotos[i] = montarTile(pm, p);
                     }
                 }
 
@@ -596,13 +624,11 @@ public class MainActivity extends Activity {
                         adapter.notifyDataSetChanged();
                         for (int i = 0; i < snap.size(); i++) {
                             Fav f = snap.get(i);
+                            // ignora se o espaco mudou enquanto carregava
+                            if (pkgs[i] == null ? f.pkg != null : !pkgs[i].equals(f.pkg)) continue;
                             f.intent = intents[i];
-                            if (intents[i] != null) {
-                                f.img.setImageBitmap(fotos[i]);
-                                f.tile.setVisibility(View.VISIBLE);
-                            } else {
-                                f.tile.setVisibility(View.GONE);
-                            }
+                            f.bitmap = fotos[i];
+                            aplicarSlot(f);
                         }
                         if (focoPendente >= 0) {
                             if (focoPendente < favs.size()
@@ -622,23 +648,33 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** Banner do app (ou o icone sobre fundo escuro), com cantos arredondados. */
+    /** Banner (YouTube, UniTV, Spotify) ou icone + nome (demais apps), com cantos arredondados. */
     private Bitmap montarTile(PackageManager pm, String pkg) {
         int w = px(230), h = px(122);
         Bitmap src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(src);
         try {
-            Drawable d = pm.getApplicationBanner(pkg);
+            Drawable d = null;
+            for (String b : BANNER_PKGS) {
+                if (b.equals(pkg)) { d = pm.getApplicationBanner(pkg); break; }
+            }
             if (d != null) {
                 d.setBounds(0, 0, w, h);
                 d.draw(c);
             } else {
                 c.drawColor(0xFF262626);
                 Drawable ic = pm.getApplicationIcon(pkg);
-                int s = px(76);
-                int l = (w - s) / 2, t = (h - s) / 2;
+                int s = px(64);
+                int l = (w - s) / 2, t = px(14);
                 ic.setBounds(l, t, l + s, t + s);
                 ic.draw(c);
+                CharSequence nome = pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0));
+                TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+                tp.setColor(Color.WHITE);
+                tp.setTextSize(px(22));
+                tp.setTextAlign(Paint.Align.CENTER);
+                CharSequence txt = TextUtils.ellipsize(nome, tp, w - px(20), TextUtils.TruncateAt.END);
+                c.drawText(txt.toString(), w / 2f, h - px(14), tp);
             }
         } catch (Exception ignored) { }
         Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
