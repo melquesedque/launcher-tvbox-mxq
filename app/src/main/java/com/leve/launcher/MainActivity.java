@@ -1,6 +1,9 @@
 package com.leve.launcher;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.content.SharedPreferences;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -37,6 +40,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextClock;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONObject;
 
@@ -55,12 +59,12 @@ import java.util.Set;
 public class MainActivity extends Activity {
 
     // ===================== CONFIGURACOES (edite aqui) =====================
-    // Cada linha = um favorito. Se houver mais de um pacote, usa o primeiro instalado.
-    private static final String[][] FAVORITOS = {
-            { "com.google.android.youtube.tv", "com.google.android.youtube.googletv" },
-            { "com.global.unitviptv" },
-            { "com.spotify.music" }
-    };
+    // Favoritos iniciais do dock (separados por virgula; "|" = alternativas, usa o primeiro instalado).
+    // Depois voce muda pelo proprio launcher: botao "+" e segurar OK sobre um favorito ou app.
+    private static final String FAVORITOS_PADRAO =
+            "com.google.android.youtube.tv|com.google.android.youtube.googletv,"
+            + "com.global.unitviptv,com.spotify.music";
+    private static final int MAX_FAVORITOS = 5;
     // Apps que nao aparecem na grade "Aplicativos"
     private static final String[] HIDDEN = {
             "com.droidlogic.mboxlauncher",
@@ -71,8 +75,8 @@ public class MainActivity extends Activity {
     };
     // Clima (Open-Meteo, gratis e sem chave). Coloque false para desligar.
     private static final boolean MOSTRAR_CLIMA = true;
-    private static final double LATITUDE = -8.683;
-    private static final double LONGITUDE = -35.592;
+    private static final double LATITUDE = -8.59;
+    private static final double LONGITUDE = -35.11;
     private static final long CLIMA_INTERVALO = 30L * 60L * 1000L;
     private static final int COLUNAS = 6;
     private static final int ICON_PX = 96;
@@ -100,6 +104,12 @@ public class MainActivity extends Activity {
     private TextView climaIcone, climaTemp;
     private boolean primeiraCarga = true;
     private long ultimoClima = 0;
+    private SharedPreferences prefs;
+    private LinearLayout linha;
+    private FrameLayout plusTile;
+    private TextView tituloGrade;
+    private boolean modoEscolher = false;
+    private int focoPendente = -1;
 
     private final BroadcastReceiver pkgReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) { carregar(); }
@@ -119,6 +129,8 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         DisplayMetrics dm = getResources().getDisplayMetrics();
         u = Math.max(dm.widthPixels, dm.heightPixels) / 1920f;
+        prefs = getSharedPreferences("leve", MODE_PRIVATE);
+        lerFavoritos();
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -191,7 +203,7 @@ public class MainActivity extends Activity {
         homeLayer.addView(climaBox, lc);
 
         // linha de baixo: Aplicativos + favoritos
-        LinearLayout linha = new LinearLayout(this);
+        linha = new LinearLayout(this);
         linha.setOrientation(LinearLayout.HORIZONTAL);
         linha.setGravity(Gravity.TOP);
 
@@ -201,32 +213,7 @@ public class MainActivity extends Activity {
         });
         linha.addView(coluna(btnApps, "Aplicativos"));
 
-        for (int i = 0; i < FAVORITOS.length; i++) {
-            final Fav f = new Fav();
-            f.pkgs = FAVORITOS[i];
-            f.tile = new FrameLayout(this);
-            f.tile.setFocusable(true);
-            f.tile.setClickable(true);
-            f.img = new ImageView(this);
-            f.img.setScaleType(ImageView.ScaleType.FIT_XY);
-            f.tile.addView(f.img, new FrameLayout.LayoutParams(-1, -1));
-            StateListDrawable sl = new StateListDrawable();
-            GradientDrawable on = new GradientDrawable();
-            on.setColor(Color.TRANSPARENT);
-            on.setStroke(px(5), Color.WHITE);
-            on.setCornerRadius(px(14));
-            sl.addState(new int[]{ android.R.attr.state_focused }, on);
-            sl.addState(new int[]{}, new ColorDrawable(Color.TRANSPARENT));
-            f.tile.setForeground(sl);
-            f.tile.setVisibility(View.GONE);
-            f.tile.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { if (f.intent != null) abrir(f.intent); }
-            });
-            LinearLayout.LayoutParams lt = new LinearLayout.LayoutParams(px(230), px(122));
-            lt.leftMargin = px(i == 0 ? 38 : 31);
-            linha.addView(f.tile, lt);
-            favs.add(f);
-        }
+        reconstruirDock();
         FrameLayout.LayoutParams ll = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.LEFT);
         ll.leftMargin = px(100);
         ll.bottomMargin = px(100);
@@ -263,19 +250,210 @@ public class MainActivity extends Activity {
         return c;
     }
 
+    // ------------------------------------------------------------ favoritos (dock)
+    private void lerFavoritos() {
+        String txt = prefs.getString("favs", FAVORITOS_PADRAO);
+        favs.clear();
+        for (String parte : txt.split(",")) {
+            if (parte.trim().length() == 0) continue;
+            Fav f = new Fav();
+            f.pkgs = parte.trim().split("\\|");
+            favs.add(f);
+        }
+    }
+
+    private void salvarFavoritos() {
+        StringBuilder sb = new StringBuilder();
+        for (Fav f : favs) {
+            if (sb.length() > 0) sb.append(',');
+            for (int i = 0; i < f.pkgs.length; i++) {
+                if (i > 0) sb.append('|');
+                sb.append(f.pkgs[i]);
+            }
+        }
+        prefs.edit().putString("favs", sb.toString()).apply();
+    }
+
+    private boolean isFav(String pkg) { return acharFav(pkg) != null; }
+
+    private Fav acharFav(String pkg) {
+        for (Fav f : favs) {
+            for (String p : f.pkgs) if (p.equals(pkg)) return f;
+        }
+        return null;
+    }
+
+    private void toast(String msg) { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show(); }
+
+    private void criarTile(final Fav f) {
+        f.tile = new FrameLayout(this);
+        f.tile.setFocusable(true);
+        f.tile.setClickable(true);
+        f.img = new ImageView(this);
+        f.img.setScaleType(ImageView.ScaleType.FIT_XY);
+        f.tile.addView(f.img, new FrameLayout.LayoutParams(-1, -1));
+        StateListDrawable sl = new StateListDrawable();
+        GradientDrawable on = new GradientDrawable();
+        on.setColor(Color.TRANSPARENT);
+        on.setStroke(px(5), Color.WHITE);
+        on.setCornerRadius(px(14));
+        sl.addState(new int[]{ android.R.attr.state_focused }, on);
+        sl.addState(new int[]{}, new ColorDrawable(Color.TRANSPARENT));
+        f.tile.setForeground(sl);
+        f.tile.setVisibility(View.GONE);
+        f.tile.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { if (f.intent != null) abrir(f.intent); }
+        });
+        f.tile.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) { menuDock(f); return true; }
+        });
+    }
+
+    private void criarPlus() {
+        plusTile = new FrameLayout(this);
+        plusTile.setFocusable(true);
+        plusTile.setClickable(true);
+        TextView t = new TextView(this);
+        t.setText("+");
+        t.setTextColor(0xFFBBBBBB);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(80));
+        t.setGravity(Gravity.CENTER);
+        t.setIncludeFontPadding(false);
+        plusTile.addView(t, new FrameLayout.LayoutParams(-1, -1));
+        StateListDrawable sl = new StateListDrawable();
+        GradientDrawable on = new GradientDrawable();
+        on.setColor(0x33FFFFFF);
+        on.setStroke(px(5), Color.WHITE);
+        on.setCornerRadius(px(14));
+        GradientDrawable off = new GradientDrawable();
+        off.setColor(0xFF101010);
+        off.setStroke(px(3), 0xFF555555);
+        off.setCornerRadius(px(14));
+        sl.addState(new int[]{ android.R.attr.state_focused }, on);
+        sl.addState(new int[]{}, off);
+        plusTile.setBackgroundDrawable(sl);
+        plusTile.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (favs.size() >= MAX_FAVORITOS) {
+                    toast("Dock cheio (m\u00E1ximo " + MAX_FAVORITOS + ")");
+                    return;
+                }
+                modoEscolher = true;
+                mostrarGrade();
+            }
+        });
+    }
+
+    private void reconstruirDock() {
+        while (linha.getChildCount() > 1) linha.removeViewAt(1);
+        for (int i = 0; i < favs.size(); i++) {
+            Fav f = favs.get(i);
+            if (f.tile == null) criarTile(f);
+            LinearLayout.LayoutParams lt = new LinearLayout.LayoutParams(px(230), px(122));
+            lt.leftMargin = px(i == 0 ? 38 : 31);
+            linha.addView(f.tile, lt);
+        }
+        if (plusTile == null) criarPlus();
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(230), px(122));
+        lp.leftMargin = px(favs.isEmpty() ? 38 : 31);
+        linha.addView(plusTile, lp);
+        plusTile.setVisibility(favs.size() >= MAX_FAVORITOS ? View.GONE : View.VISIBLE);
+    }
+
+    private void adicionarFav(String pkg) {
+        if (isFav(pkg)) { toast("J\u00E1 est\u00E1 no dock"); return; }
+        if (favs.size() >= MAX_FAVORITOS) {
+            toast("Dock cheio (m\u00E1ximo " + MAX_FAVORITOS + ")");
+            return;
+        }
+        Fav f = new Fav();
+        f.pkgs = new String[]{ pkg };
+        favs.add(f);
+        salvarFavoritos();
+        reconstruirDock();
+        focoPendente = favs.size() - 1;
+        carregar();
+    }
+
+    private void removerFav(Fav f) {
+        int idx = favs.indexOf(f);
+        if (idx < 0) return;
+        favs.remove(idx);
+        salvarFavoritos();
+        reconstruirDock();
+        if (homeLayer.getVisibility() == View.VISIBLE) {
+            if (favs.isEmpty()) plusTile.requestFocus();
+            else favs.get(Math.min(idx, favs.size() - 1)).tile.requestFocus();
+        }
+    }
+
+    private void moverFav(final Fav f, int delta) {
+        int idx = favs.indexOf(f);
+        int j = idx + delta;
+        if (idx < 0 || j < 0 || j >= favs.size()) return;
+        Collections.swap(favs, idx, j);
+        salvarFavoritos();
+        reconstruirDock();
+        f.tile.post(new Runnable() {
+            @Override public void run() { f.tile.requestFocus(); }
+        });
+    }
+
+    /** Menu ao segurar OK em um favorito do dock. */
+    private void menuDock(final Fav f) {
+        int idx = favs.indexOf(f);
+        final List<String> nomes = new ArrayList<String>();
+        final List<Integer> cod = new ArrayList<Integer>();
+        nomes.add("Remover do dock");
+        cod.add(0);
+        if (idx > 0) { nomes.add("Mover para a esquerda"); cod.add(1); }
+        if (idx < favs.size() - 1) { nomes.add("Mover para a direita"); cod.add(2); }
+        new AlertDialog.Builder(this)
+                .setTitle("Dock")
+                .setItems(nomes.toArray(new String[0]), new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        int c = cod.get(which);
+                        if (c == 0) removerFav(f);
+                        else if (c == 1) moverFav(f, -1);
+                        else moverFav(f, 1);
+                    }
+                }).show();
+    }
+
+    /** Menu ao segurar OK em um app da grade. */
+    private void menuGrade(final Item it) {
+        final boolean fav = isFav(it.pkg);
+        String[] ops = { fav ? "Remover do dock" : "Adicionar ao dock", "Informa\u00E7\u00F5es do app" };
+        new AlertDialog.Builder(this)
+                .setTitle(it.label)
+                .setItems(ops, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        if (which == 0) {
+                            if (fav) removerFav(acharFav(it.pkg));
+                            else adicionarFav(it.pkg);
+                        } else {
+                            try {
+                                startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.parse("package:" + it.pkg)));
+                            } catch (Exception ignored) { }
+                        }
+                    }
+                }).show();
+    }
+
     // ------------------------------------------------------------ grade de apps
     private void montarGrade() {
         gridLayer = new LinearLayout(this);
         gridLayer.setOrientation(LinearLayout.VERTICAL);
         gridLayer.setPadding(px(100), px(60), px(100), px(30));
 
-        TextView titulo = new TextView(this);
-        titulo.setText("Aplicativos");
-        titulo.setTextColor(Color.WHITE);
-        titulo.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(56));
-        titulo.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
-        titulo.setPadding(0, 0, 0, px(30));
-        gridLayer.addView(titulo);
+        tituloGrade = new TextView(this);
+        tituloGrade.setText("Aplicativos");
+        tituloGrade.setTextColor(Color.WHITE);
+        tituloGrade.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(56));
+        tituloGrade.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        tituloGrade.setPadding(0, 0, 0, px(30));
+        gridLayer.addView(tituloGrade);
 
         grid = new GridView(this);
         grid.setNumColumns(COLUNAS);
@@ -293,18 +471,21 @@ public class MainActivity extends Activity {
         grid.setAdapter(adapter);
         grid.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override public void onItemClick(AdapterView<?> p, View v, int pos, long id) {
+                Item it = items.get(pos);
+                if (modoEscolher) {
+                    adicionarFav(it.pkg);
+                    mostrarInicio();
+                    return;
+                }
                 Intent i = new Intent(Intent.ACTION_MAIN);
-                i.setComponent(items.get(pos).cn);
+                i.setComponent(it.cn);
                 abrir(i);
             }
         });
-        // segurar OK = informacoes do app (limpar cache, forcar parada, desinstalar)
+        // segurar OK = adicionar/remover do dock ou ver informacoes do app
         grid.setOnItemLongClickListener(new AdapterView.OnItemLongClickListener() {
             @Override public boolean onItemLongClick(AdapterView<?> p, View v, int pos, long id) {
-                try {
-                    startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                            Uri.parse("package:" + items.get(pos).pkg)));
-                } catch (Exception ignored) { }
+                menuGrade(items.get(pos));
                 return true;
             }
         });
@@ -312,12 +493,14 @@ public class MainActivity extends Activity {
     }
 
     private void mostrarGrade() {
+        tituloGrade.setText(modoEscolher ? "Escolha o app para adicionar ao dock" : "Aplicativos");
         homeLayer.setVisibility(View.GONE);
         gridLayer.setVisibility(View.VISIBLE);
         grid.requestFocus();
     }
 
     private void mostrarInicio() {
+        modoEscolher = false;
         gridLayer.setVisibility(View.GONE);
         homeLayer.setVisibility(View.VISIBLE);
         focarInicio();
@@ -364,6 +547,7 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------ carregar apps
     private void carregar() {
+        final List<Fav> snap = new ArrayList<Fav>(favs);
         new Thread(new Runnable() {
             @Override public void run() {
                 PackageManager pm = getPackageManager();
@@ -391,10 +575,10 @@ public class MainActivity extends Activity {
                     }
                 });
 
-                final Bitmap[] fotos = new Bitmap[favs.size()];
-                final Intent[] intents = new Intent[favs.size()];
-                for (int i = 0; i < favs.size(); i++) {
-                    for (String p : favs.get(i).pkgs) {
+                final Bitmap[] fotos = new Bitmap[snap.size()];
+                final Intent[] intents = new Intent[snap.size()];
+                for (int i = 0; i < snap.size(); i++) {
+                    for (String p : snap.get(i).pkgs) {
                         Intent li = pm.getLeanbackLaunchIntentForPackage(p);
                         if (li == null) li = pm.getLaunchIntentForPackage(p);
                         if (li != null) {
@@ -410,8 +594,8 @@ public class MainActivity extends Activity {
                         items.clear();
                         items.addAll(novos);
                         adapter.notifyDataSetChanged();
-                        for (int i = 0; i < favs.size(); i++) {
-                            Fav f = favs.get(i);
+                        for (int i = 0; i < snap.size(); i++) {
+                            Fav f = snap.get(i);
                             f.intent = intents[i];
                             if (intents[i] != null) {
                                 f.img.setImageBitmap(fotos[i]);
@@ -419,6 +603,14 @@ public class MainActivity extends Activity {
                             } else {
                                 f.tile.setVisibility(View.GONE);
                             }
+                        }
+                        if (focoPendente >= 0) {
+                            if (focoPendente < favs.size()
+                                    && favs.get(focoPendente).tile.getVisibility() == View.VISIBLE
+                                    && homeLayer.getVisibility() == View.VISIBLE) {
+                                favs.get(focoPendente).tile.requestFocus();
+                            }
+                            focoPendente = -1;
                         }
                         if (primeiraCarga && homeLayer.getVisibility() == View.VISIBLE) {
                             primeiraCarga = false;
