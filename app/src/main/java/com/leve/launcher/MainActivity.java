@@ -2,27 +2,31 @@ package com.leve.launcher;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.DialogInterface;
-import android.content.SharedPreferences;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
-import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.StateListDrawable;
+import android.media.MediaMetadata;
+import android.media.session.MediaController;
+import android.media.session.MediaSessionManager;
+import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -57,19 +61,14 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** Launcher leve: relogio, clima, 3 favoritos e grade de apps. Sem animacoes. */
+/** Launcher leve: relogio, clima, dock de 5 banners, musica tocando e grade de apps. */
 public class MainActivity extends Activity {
 
     // ===================== CONFIGURACOES (edite aqui) =====================
-    // Favoritos iniciais do dock (separados por virgula; "|" = alternativas, usa o primeiro instalado).
-    // Sao so um ponto de partida: os 5 espacos do dock sao livres (apertar OK em um espaco vazio,
-    // ou segurar OK sobre um favorito/app para trocar, remover ou mover).
     private static final String FAVORITOS_PADRAO =
             "com.google.android.youtube.tv|com.google.android.youtube.googletv,"
-            + "com.global.unitviptv,com.uni.tv.apk,com.spotify.music";
+            + "com.global.unitviptv,com.spotify.music";
     private static final int SLOTS = 5;
-    // Todo app que tiver banner usa o banner no dock; quem nao tiver aparece com icone e nome.
-    // Apps que nao aparecem na grade "Aplicativos"
     private static final String[] HIDDEN = {
             "com.droidlogic.mboxlauncher",
             "com.android.documentsui",
@@ -77,7 +76,7 @@ public class MainActivity extends Activity {
             "com.android.apkinstaller",
             "com.android.assistant.setting.iknew.rk"
     };
-    // Clima (Open-Meteo, gratis e sem chave). Coloque false para desligar.
+    private static final String PACOTE_CONFIG = "com.android.tv.settings";
     private static final boolean MOSTRAR_CLIMA = true;
     private static final double LATITUDE = -8.59;
     private static final double LONGITUDE = -35.11;
@@ -92,6 +91,7 @@ public class MainActivity extends Activity {
         String pkg;          // null = espaco vazio
         Intent intent;
         Bitmap bitmap;
+        int cor = 0xFF262626;
         FrameLayout tile;
         ImageView img;
         TextView mais;
@@ -103,24 +103,33 @@ public class MainActivity extends Activity {
     private BaseAdapter adapter;
     private float u;
     private FrameLayout homeLayer;
-    private LinearLayout gridLayer;
+    private LinearLayout gridLayer, linha;
     private GridView grid;
     private IconButton btnApps, btnConfig;
-    private LinearLayout climaBox;
-    private TextView climaIcone, climaTemp;
-    private boolean primeiraCarga = true;
+    private LinearLayout climaBox, musicaBox;
+    private TextView climaIcone, climaTemp, tituloGrade, musicaTitulo, musicaSub;
+    private ImageView musicaCapa;
+    private boolean primeiraCarga = true, modoEscolher = false;
     private long ultimoClima = 0;
     private SharedPreferences prefs;
-    private LinearLayout linha;
-    private int slotAlvo = -1;
-    private TextView tituloGrade;
-    private boolean modoEscolher = false;
-    private int focoPendente = -1;
+    private int slotAlvo = -1, focoPendente = -1, selecionado = SLOTS / 2;
+
+    // musica
+    private MediaSessionManager msm;
+    private ComponentName listenerCn;
+    private final List<MediaController> controllers = new ArrayList<MediaController>();
+    private final MediaController.Callback ctlCallback = new MediaController.Callback() {
+        @Override public void onMetadataChanged(MediaMetadata m) { atualizarMusica(); }
+        @Override public void onPlaybackStateChanged(PlaybackState s) { atualizarMusica(); }
+    };
+    private final MediaSessionManager.OnActiveSessionsChangedListener sessListener =
+            new MediaSessionManager.OnActiveSessionsChangedListener() {
+                @Override public void onActiveSessionsChanged(List<MediaController> l) { ligarControllers(l); }
+            };
 
     private final BroadcastReceiver pkgReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) { carregar(); }
     };
-
     private final Runnable climaTask = new Runnable() {
         @Override public void run() {
             atualizarClima();
@@ -150,6 +159,16 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------ tela inicial
+    private TextView texto(String t, int tamanho, int cor, int estilo) {
+        TextView v = new TextView(this);
+        v.setText(t);
+        v.setTextColor(cor);
+        v.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(tamanho));
+        v.setTypeface(Typeface.create("sans-serif", estilo));
+        v.setIncludeFontPadding(false);
+        return v;
+    }
+
     private void montarInicio() {
         homeLayer = new FrameLayout(this);
 
@@ -157,103 +176,133 @@ public class MainActivity extends Activity {
         hora.setFormat24Hour("HH:mm");
         hora.setFormat12Hour("HH:mm");
         hora.setTextColor(Color.WHITE);
-        hora.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(100));
+        hora.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(118));
         hora.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
         hora.setIncludeFontPadding(false);
         FrameLayout.LayoutParams lh = new FrameLayout.LayoutParams(-2, -2);
-        lh.leftMargin = px(108);
-        lh.topMargin = px(80);
+        lh.leftMargin = px(70);
+        lh.topMargin = px(48);
         homeLayer.addView(hora, lh);
 
         TextClock data = new TextClock(this);
         data.setFormat24Hour("dd/MM/yyyy");
         data.setFormat12Hour("dd/MM/yyyy");
         data.setTextColor(Color.WHITE);
-        data.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(30));
+        data.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(36));
         data.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         data.setIncludeFontPadding(false);
         FrameLayout.LayoutParams ld = new FrameLayout.LayoutParams(-2, -2);
-        ld.leftMargin = px(115);
-        ld.topMargin = px(262);
+        ld.leftMargin = px(75);
+        ld.topMargin = px(168);
         homeLayer.addView(data, ld);
 
-        // clima (canto superior direito)
+        // clima
         climaBox = new LinearLayout(this);
         climaBox.setOrientation(LinearLayout.HORIZONTAL);
         climaBox.setGravity(Gravity.CENTER_VERTICAL);
-        climaIcone = new TextView(this);
-        climaIcone.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(80));
-        climaIcone.setIncludeFontPadding(false);
-        climaIcone.setTextColor(Color.WHITE);
+        climaIcone = texto("", 82, Color.WHITE, Typeface.NORMAL);
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(px(18), 0, 0, 0);
-        TextView hoje = new TextView(this);
-        hoje.setText("Hoje");
-        hoje.setTextColor(Color.WHITE);
-        hoje.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(20));
-        hoje.setIncludeFontPadding(false);
-        climaTemp = new TextView(this);
-        climaTemp.setTextColor(Color.WHITE);
-        climaTemp.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(80));
-        climaTemp.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
-        climaTemp.setIncludeFontPadding(false);
-        col.addView(hoje);
+        col.setPadding(px(16), 0, 0, 0);
+        col.addView(texto("Hoje", 28, Color.WHITE, Typeface.NORMAL));
+        climaTemp = texto("", 78, Color.WHITE, Typeface.BOLD);
         col.addView(climaTemp);
         climaBox.addView(climaIcone);
         climaBox.addView(col);
         climaBox.setVisibility(View.INVISIBLE);
         FrameLayout.LayoutParams lc = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.RIGHT);
-        lc.rightMargin = px(70);
-        lc.topMargin = px(85);
+        lc.rightMargin = px(75);
+        lc.topMargin = px(62);
         homeLayer.addView(climaBox, lc);
 
-        // linha de baixo: Aplicativos + favoritos
+        // dock central
         linha = new LinearLayout(this);
         linha.setOrientation(LinearLayout.HORIZONTAL);
-        linha.setGravity(Gravity.TOP);
+        linha.setGravity(Gravity.CENTER_VERTICAL);
+        montarDock();
+        FrameLayout.LayoutParams ll = new FrameLayout.LayoutParams(-2, px(448), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        ll.topMargin = px(323);
+        homeLayer.addView(linha, ll);
+        atualizarTamanhos();
 
+        // musica tocando (canto inferior esquerdo)
+        musicaBox = new LinearLayout(this);
+        musicaBox.setOrientation(LinearLayout.HORIZONTAL);
+        musicaBox.setGravity(Gravity.CENTER_VERTICAL);
+        musicaCapa = new ImageView(this);
+        musicaCapa.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        musicaBox.addView(musicaCapa, new LinearLayout.LayoutParams(px(80), px(80)));
+        LinearLayout tx = new LinearLayout(this);
+        tx.setOrientation(LinearLayout.VERTICAL);
+        tx.setPadding(px(28), 0, 0, 0);
+        musicaTitulo = texto("", 44, Color.WHITE, Typeface.BOLD);
+        musicaTitulo.setSingleLine(true);
+        musicaTitulo.setEllipsize(TextUtils.TruncateAt.END);
+        musicaTitulo.setMaxWidth(px(1000));
+        musicaSub = texto("", 28, 0xFFDDDDDD, Typeface.NORMAL);
+        musicaSub.setSingleLine(true);
+        musicaSub.setEllipsize(TextUtils.TruncateAt.END);
+        musicaSub.setMaxWidth(px(1000));
+        musicaSub.setPadding(0, px(4), 0, 0);
+        tx.addView(musicaTitulo);
+        tx.addView(musicaSub);
+        musicaBox.addView(tx);
+        musicaBox.setVisibility(View.GONE);
+        FrameLayout.LayoutParams lm = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.LEFT);
+        lm.leftMargin = px(75);
+        lm.bottomMargin = px(76);
+        homeLayer.addView(musicaBox, lm);
+
+        // botoes (canto inferior direito)
+        LinearLayout pill = new LinearLayout(this);
+        pill.setOrientation(LinearLayout.HORIZONTAL);
+        pill.setGravity(Gravity.CENTER_VERTICAL);
+        pill.setPadding(px(12), px(12), px(12), px(12));
+        GradientDrawable pbg = new GradientDrawable();
+        pbg.setColor(0xFF1A1A1A);
+        pbg.setCornerRadius(px(50));
+        pill.setBackgroundDrawable(pbg);
         btnApps = new IconButton(this, 0);
         btnApps.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { mostrarGrade(); }
         });
-        linha.addView(coluna(btnApps, "Aplicativos"));
-
-        montarDock();
-        FrameLayout.LayoutParams ll = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.LEFT);
-        ll.leftMargin = px(100);
-        ll.bottomMargin = px(100);
-        homeLayer.addView(linha, ll);
-
-        // configuracoes (canto inferior direito)
         btnConfig = new IconButton(this, 1);
         btnConfig.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                try {
-                    startActivity(new Intent(Settings.ACTION_SETTINGS)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-                } catch (Exception ignored) { }
-            }
+            @Override public void onClick(View v) { abrirConfig(); }
         });
-        FrameLayout.LayoutParams lcfg = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.RIGHT);
-        lcfg.rightMargin = px(85);
-        lcfg.bottomMargin = px(100);
-        homeLayer.addView(coluna(btnConfig, "Configura\u00E7\u00F5es"), lcfg);
+        pill.addView(btnApps, new LinearLayout.LayoutParams(px(76), px(76)));
+        LinearLayout.LayoutParams lb = new LinearLayout.LayoutParams(px(76), px(76));
+        lb.leftMargin = px(10);
+        pill.addView(btnConfig, lb);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.RIGHT);
+        lp.rightMargin = px(77);
+        lp.bottomMargin = px(77);
+        homeLayer.addView(pill, lp);
     }
 
-    private LinearLayout coluna(View botao, String texto) {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setGravity(Gravity.CENTER_HORIZONTAL);
-        c.addView(botao, new LinearLayout.LayoutParams(px(124), px(124)));
-        TextView t = new TextView(this);
-        t.setText(texto);
-        t.setTextColor(0xFFEEEEEE);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(18));
-        t.setIncludeFontPadding(false);
-        t.setPadding(0, px(14), 0, 0);
-        c.addView(t);
-        return c;
+    private void abrirConfig() {
+        PackageManager pm = getPackageManager();
+        Intent i = pm.getLeanbackLaunchIntentForPackage(PACOTE_CONFIG);
+        if (i == null) i = pm.getLaunchIntentForPackage(PACOTE_CONFIG);
+        if (i == null) i = new Intent(Settings.ACTION_SETTINGS);
+        abrir(i);
+    }
+
+    /** Espaco selecionado = grande; vizinho = medio; os demais = pequenos. */
+    private void atualizarTamanhos() {
+        for (int i = 0; i < favs.size(); i++) {
+            int d = Math.abs(i - selecionado);
+            int w = d == 0 ? 374 : 284;
+            int h = d == 0 ? 448 : (d == 1 ? 348 : 261);
+            View t = favs.get(i).tile;
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) t.getLayoutParams();
+            int nw = px(w), nh = px(h);
+            if (lp.width != nw || lp.height != nh) {
+                lp.width = nw;
+                lp.height = nh;
+                t.setLayoutParams(lp);
+            }
+        }
     }
 
     // ------------------------------------------------------------ favoritos (5 espacos livres)
@@ -262,13 +311,13 @@ public class MainActivity extends Activity {
         String guardado = prefs.getString("slots", null);
         String[] partes = guardado != null
                 ? guardado.split(",", -1)
-                : prefs.getString("favs", FAVORITOS_PADRAO).split(","); // formato da versao anterior
+                : prefs.getString("favs", FAVORITOS_PADRAO).split(",");
         favs.clear();
         for (int i = 0; i < SLOTS; i++) {
             Fav f = new Fav();
             if (i < partes.length) {
                 String p = partes[i].trim();
-                if (p.indexOf('|') >= 0) { // alternativas: usa a primeira instalada
+                if (p.indexOf('|') >= 0) {
                     String[] alt = p.split("\\|");
                     p = alt[0];
                     for (String a : alt) {
@@ -302,20 +351,14 @@ public class MainActivity extends Activity {
 
     private void toast(String msg) { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show(); }
 
-    /** Atualiza a aparencia do espaco: vazio (+) ou preenchido (banner/icone). */
     private void aplicarSlot(Fav f) {
-        boolean cheio = f.pkg != null && f.intent != null && f.bitmap != null;
+        boolean cheio = f.pkg != null && f.intent != null;
         f.img.setImageBitmap(cheio ? f.bitmap : null);
         f.mais.setVisibility(cheio ? View.GONE : View.VISIBLE);
-        if (cheio) {
-            f.tile.setBackgroundDrawable(null);
-        } else {
-            GradientDrawable off = new GradientDrawable();
-            off.setColor(0xFF101010);
-            off.setStroke(px(3), 0xFF555555);
-            off.setCornerRadius(px(14));
-            f.tile.setBackgroundDrawable(off);
-        }
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(cheio ? f.cor : 0xFF222222);
+        bg.setCornerRadius(px(26));
+        f.tile.setBackgroundDrawable(bg);
     }
 
     private void criarTile(final Fav f) {
@@ -323,23 +366,19 @@ public class MainActivity extends Activity {
         f.tile.setFocusable(true);
         f.tile.setClickable(true);
         f.img = new ImageView(this);
-        f.img.setScaleType(ImageView.ScaleType.FIT_XY);
+        f.img.setScaleType(ImageView.ScaleType.FIT_CENTER);
         f.tile.addView(f.img, new FrameLayout.LayoutParams(-1, -1));
-        f.mais = new TextView(this);
-        f.mais.setText("+");
-        f.mais.setTextColor(0xFFBBBBBB);
-        f.mais.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(80));
+        f.mais = texto("+", 120, Color.WHITE, Typeface.BOLD);
         f.mais.setGravity(Gravity.CENTER);
-        f.mais.setIncludeFontPadding(false);
         f.tile.addView(f.mais, new FrameLayout.LayoutParams(-1, -1));
-        StateListDrawable sl = new StateListDrawable();
-        GradientDrawable on = new GradientDrawable();
-        on.setColor(Color.TRANSPARENT);
-        on.setStroke(px(5), Color.WHITE);
-        on.setCornerRadius(px(14));
-        sl.addState(new int[]{ android.R.attr.state_focused }, on);
-        sl.addState(new int[]{}, new ColorDrawable(Color.TRANSPARENT));
-        f.tile.setForeground(sl);
+        f.tile.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override public void onFocusChange(View v, boolean tem) {
+                if (tem) {
+                    selecionado = favs.indexOf(f);
+                    atualizarTamanhos();
+                }
+            }
+        });
         f.tile.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 if (f.pkg != null && f.intent != null) abrir(f.intent);
@@ -360,13 +399,12 @@ public class MainActivity extends Activity {
             Fav f = favs.get(i);
             criarTile(f);
             aplicarSlot(f);
-            LinearLayout.LayoutParams lt = new LinearLayout.LayoutParams(px(230), px(122));
-            lt.leftMargin = px(i == 0 ? 38 : 31);
+            LinearLayout.LayoutParams lt = new LinearLayout.LayoutParams(px(284), px(261));
+            lt.leftMargin = i == 0 ? 0 : px(45);
             linha.addView(f.tile, lt);
         }
     }
 
-    /** Abre a lista de apps para escolher qual vai ocupar o espaco idx. */
     private void escolher(int idx) {
         if (idx < 0) return;
         modoEscolher = true;
@@ -413,13 +451,13 @@ public class MainActivity extends Activity {
         String p = f.pkg; f.pkg = b.pkg; b.pkg = p;
         Intent in = f.intent; f.intent = b.intent; b.intent = in;
         Bitmap bm = f.bitmap; f.bitmap = b.bitmap; b.bitmap = bm;
+        int cr = f.cor; f.cor = b.cor; b.cor = cr;
         aplicarSlot(f);
         aplicarSlot(b);
         salvarFavoritos();
         b.tile.requestFocus();
     }
 
-    /** Menu ao segurar OK em um favorito do dock. */
     private void menuDock(final Fav f) {
         int idx = favs.indexOf(f);
         final List<String> nomes = new ArrayList<String>();
@@ -441,7 +479,6 @@ public class MainActivity extends Activity {
                 }).show();
     }
 
-    /** Menu ao segurar OK em um app da grade. */
     private void menuGrade(final Item it) {
         final boolean fav = isFav(it.pkg);
         String[] ops = { fav ? "Remover do dock" : "Adicionar ao dock", "Informa\u00E7\u00F5es do app" };
@@ -468,11 +505,7 @@ public class MainActivity extends Activity {
         gridLayer.setOrientation(LinearLayout.VERTICAL);
         gridLayer.setPadding(px(100), px(60), px(100), px(30));
 
-        tituloGrade = new TextView(this);
-        tituloGrade.setText("Aplicativos");
-        tituloGrade.setTextColor(Color.WHITE);
-        tituloGrade.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(56));
-        tituloGrade.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        tituloGrade = texto("Aplicativos", 56, Color.WHITE, Typeface.BOLD);
         tituloGrade.setPadding(0, 0, 0, px(30));
         gridLayer.addView(tituloGrade);
 
@@ -503,7 +536,6 @@ public class MainActivity extends Activity {
                 abrir(i);
             }
         });
-        // segurar OK = adicionar/remover do dock ou ver informacoes do app
         grid.setOnItemLongClickListener(new AdapterView.OnItemLongClickListener() {
             @Override public boolean onItemLongClick(AdapterView<?> p, View v, int pos, long id) {
                 menuGrade(items.get(pos));
@@ -527,16 +559,12 @@ public class MainActivity extends Activity {
         focarInicio();
     }
 
-    private void focarInicio() {
-        for (Fav f : favs) {
-            if (f.pkg != null && f.intent != null) { f.tile.requestFocus(); return; }
-        }
-        btnApps.requestFocus();
-    }
+    /** O espaco do meio sempre comeca selecionado. */
+    private void focarInicio() { favs.get(SLOTS / 2).tile.requestFocus(); }
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        mostrarInicio(); // botao Home sempre volta para a tela inicial
+        mostrarInicio();
     }
 
     @Override public void onBackPressed() {
@@ -551,12 +579,14 @@ public class MainActivity extends Activity {
         f.addDataScheme("package");
         registerReceiver(pkgReceiver, f);
         if (MOSTRAR_CLIMA) handler.post(climaTask);
+        iniciarMusica();
     }
 
     @Override protected void onPause() {
         super.onPause();
         try { unregisterReceiver(pkgReceiver); } catch (Exception ignored) { }
         handler.removeCallbacks(climaTask);
+        pararMusica();
     }
 
     private void abrir(Intent i) {
@@ -564,6 +594,87 @@ public class MainActivity extends Activity {
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             startActivity(i);
         } catch (Exception ignored) { }
+    }
+
+    // ------------------------------------------------------------ musica tocando
+    private void iniciarMusica() {
+        try {
+            msm = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
+            listenerCn = new ComponentName(this, MediaListener.class);
+            msm.addOnActiveSessionsChangedListener(sessListener, listenerCn);
+            ligarControllers(msm.getActiveSessions(listenerCn));
+        } catch (Exception e) {
+            // sem acesso (veja o LEIAME): o bloco de musica fica escondido
+            musicaBox.setVisibility(View.GONE);
+        }
+    }
+
+    private void pararMusica() {
+        try { if (msm != null) msm.removeOnActiveSessionsChangedListener(sessListener); } catch (Exception ignored) { }
+        for (MediaController c : controllers) {
+            try { c.unregisterCallback(ctlCallback); } catch (Exception ignored) { }
+        }
+        controllers.clear();
+    }
+
+    private void ligarControllers(List<MediaController> lista) {
+        for (MediaController c : controllers) {
+            try { c.unregisterCallback(ctlCallback); } catch (Exception ignored) { }
+        }
+        controllers.clear();
+        if (lista != null) {
+            for (MediaController c : lista) {
+                try { c.registerCallback(ctlCallback); controllers.add(c); } catch (Exception ignored) { }
+            }
+        }
+        atualizarMusica();
+    }
+
+    private void atualizarMusica() {
+        MediaController escolhido = null;
+        for (MediaController c : controllers) {
+            PlaybackState st = c.getPlaybackState();
+            if (c.getMetadata() == null) continue;
+            if (st != null && st.getState() == PlaybackState.STATE_PLAYING) { escolhido = c; break; }
+            if (escolhido == null) escolhido = c;
+        }
+        MediaMetadata m = escolhido == null ? null : escolhido.getMetadata();
+        String titulo = m == null ? null : m.getString(MediaMetadata.METADATA_KEY_TITLE);
+        if (titulo == null || titulo.length() == 0) {
+            musicaBox.setVisibility(View.GONE);
+            return;
+        }
+        String artista = m.getString(MediaMetadata.METADATA_KEY_ARTIST);
+        if (artista == null) artista = m.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST);
+        String album = m.getString(MediaMetadata.METADATA_KEY_ALBUM);
+        StringBuilder sub = new StringBuilder();
+        if (album != null && album.length() > 0) sub.append(album);
+        if (artista != null && artista.length() > 0) {
+            if (sub.length() > 0) sub.append(" | ");
+            sub.append(artista);
+        }
+        Bitmap arte = m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+        if (arte == null) arte = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
+        if (arte == null) arte = m.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
+        if (arte != null) {
+            Bitmap pequena = Bitmap.createScaledBitmap(arte, px(80), px(80), true);
+            musicaCapa.setImageBitmap(arredondar(pequena, px(8)));
+            musicaCapa.setVisibility(View.VISIBLE);
+        } else {
+            musicaCapa.setVisibility(View.GONE);
+        }
+        musicaTitulo.setText(titulo);
+        musicaSub.setText(sub.toString());
+        musicaSub.setVisibility(sub.length() > 0 ? View.VISIBLE : View.GONE);
+        musicaBox.setVisibility(View.VISIBLE);
+    }
+
+    private Bitmap arredondar(Bitmap src, float r) {
+        Bitmap out = Bitmap.createBitmap(src.getWidth(), src.getHeight(), Bitmap.Config.ARGB_8888);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setShader(new BitmapShader(src, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
+        new Canvas(out).drawRoundRect(new RectF(0, 0, src.getWidth(), src.getHeight()), r, r, p);
+        return out;
     }
 
     // ------------------------------------------------------------ carregar apps
@@ -600,6 +711,7 @@ public class MainActivity extends Activity {
 
                 final Bitmap[] fotos = new Bitmap[snap.size()];
                 final Intent[] intents = new Intent[snap.size()];
+                final int[] cores = new int[snap.size()];
                 for (int i = 0; i < snap.size(); i++) {
                     String p = pkgs[i];
                     if (p == null) continue;
@@ -607,7 +719,9 @@ public class MainActivity extends Activity {
                     if (li == null) li = pm.getLaunchIntentForPackage(p);
                     if (li != null) {
                         intents[i] = li;
-                        fotos[i] = montarTile(pm, p, li);
+                        int[] cor = new int[1];
+                        fotos[i] = montarTile(pm, p, li, cor);
+                        cores[i] = cor[0];
                     }
                 }
 
@@ -618,16 +732,14 @@ public class MainActivity extends Activity {
                         adapter.notifyDataSetChanged();
                         for (int i = 0; i < snap.size(); i++) {
                             Fav f = snap.get(i);
-                            // ignora se o espaco mudou enquanto carregava
                             if (pkgs[i] == null ? f.pkg != null : !pkgs[i].equals(f.pkg)) continue;
                             f.intent = intents[i];
                             f.bitmap = fotos[i];
+                            if (intents[i] != null) f.cor = cores[i];
                             aplicarSlot(f);
                         }
                         if (focoPendente >= 0) {
-                            if (focoPendente < favs.size()
-                                    && favs.get(focoPendente).tile.getVisibility() == View.VISIBLE
-                                    && homeLayer.getVisibility() == View.VISIBLE) {
+                            if (focoPendente < favs.size() && homeLayer.getVisibility() == View.VISIBLE) {
                                 favs.get(focoPendente).tile.requestFocus();
                             }
                             focoPendente = -1;
@@ -642,43 +754,47 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** Banner do app (se tiver) ou icone + nome, com cantos arredondados. */
-    private Bitmap montarTile(PackageManager pm, String pkg, Intent launch) {
-        int w = px(230), h = px(122);
-        Bitmap src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-        Canvas c = new Canvas(src);
+    /**
+     * Imagem do dock. Com banner: o banner inteiro (a cor de fundo do tile vem da borda do banner).
+     * Sem banner: icone do app + nome.
+     */
+    private Bitmap montarTile(PackageManager pm, String pkg, Intent launch, int[] cor) {
+        int bw = px(374);
+        cor[0] = 0xFF262626;
         try {
             Drawable d = null;
             try { d = pm.getActivityBanner(launch); } catch (Exception ignored) { }
             if (d == null) d = pm.getApplicationBanner(pkg);
             if (d != null) {
-                d.setBounds(0, 0, w, h);
-                d.draw(c);
-            } else {
-                c.drawColor(0xFF262626);
-                Drawable ic = pm.getApplicationIcon(pkg);
-                int s = px(64);
-                int l = (w - s) / 2, t = px(14);
-                ic.setBounds(l, t, l + s, t + s);
-                ic.draw(c);
-                CharSequence nome = pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0));
-                TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
-                tp.setColor(Color.WHITE);
-                tp.setTextSize(px(22));
-                tp.setTextAlign(Paint.Align.CENTER);
-                CharSequence txt = TextUtils.ellipsize(nome, tp, w - px(20), TextUtils.TruncateAt.END);
-                c.drawText(txt.toString(), w / 2f, h - px(14), tp);
+                int iw = d.getIntrinsicWidth(), ih = d.getIntrinsicHeight();
+                int bh = (iw > 0 && ih > 0) ? Math.max(1, bw * ih / iw) : bw * 9 / 16;
+                Bitmap b = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888);
+                d.setBounds(0, 0, bw, bh);
+                d.draw(new Canvas(b));
+                int amostra = b.getPixel(2, 2);
+                if (Color.alpha(amostra) > 250) cor[0] = amostra;
+                return b;
             }
-        } catch (Exception ignored) { }
-        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setShader(new BitmapShader(src, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
-        new Canvas(out).drawRoundRect(new RectF(0, 0, w, h), px(14), px(14), p);
-        src.recycle();
-        return out;
+            Bitmap b = Bitmap.createBitmap(bw, bw, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(b);
+            Drawable ic = pm.getApplicationIcon(pkg);
+            int s = px(150);
+            int l = (bw - s) / 2, t = px(70);
+            ic.setBounds(l, t, l + s, t + s);
+            ic.draw(c);
+            CharSequence nome = pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0));
+            TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+            tp.setColor(Color.WHITE);
+            tp.setTextSize(px(34));
+            tp.setTextAlign(Paint.Align.CENTER);
+            CharSequence txt = TextUtils.ellipsize(nome, tp, bw - px(40), TextUtils.TruncateAt.END);
+            c.drawText(txt.toString(), bw / 2f, px(300), tp);
+            return b;
+        } catch (Exception e) {
+            return Bitmap.createBitmap(bw, bw, Bitmap.Config.ARGB_8888);
+        }
     }
 
-    /** Reduz o icone para economizar RAM. */
     private Bitmap reduzir(Drawable d) {
         Bitmap bmp = Bitmap.createBitmap(ICON_PX, ICON_PX, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
@@ -719,7 +835,6 @@ public class MainActivity extends Activity {
                         }
                     });
                 } catch (Exception ignored) {
-                    // sem internet ou erro: o clima simplesmente nao aparece
                 } finally {
                     if (con != null) con.disconnect();
                 }
@@ -753,9 +868,7 @@ public class MainActivity extends Activity {
                 box.setPadding(px(8), px(16), px(8), px(12));
                 ImageView img = new ImageView(MainActivity.this);
                 img.setLayoutParams(new LinearLayout.LayoutParams(px(96), px(96)));
-                TextView txt = new TextView(MainActivity.this);
-                txt.setTextColor(Color.WHITE);
-                txt.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(26));
+                TextView txt = texto("", 26, Color.WHITE, Typeface.NORMAL);
                 txt.setSingleLine(true);
                 txt.setGravity(Gravity.CENTER);
                 txt.setPadding(0, px(8), 0, 0);
@@ -772,8 +885,8 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ------------------------------------------------------------ botoes desenhados
-    /** Botao quadrado com icone desenhado em codigo: 0 = grade de apps, 1 = ajustes. */
+    // ------------------------------------------------------------ botoes redondos
+    /** 0 = todos os apps (pontinhos), 1 = engrenagem. */
     private static class IconButton extends View {
         private final int tipo;
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -786,48 +899,42 @@ public class MainActivity extends Activity {
         }
 
         @Override protected void onDraw(Canvas c) {
-            float w = getWidth(), h = getHeight();
+            float w = getWidth();
+            float cx = w / 2f, cy = getHeight() / 2f;
             boolean foco = isFocused();
-            float sw = w * (foco ? 0.045f : 0.016f);
-            RectF r = new RectF(sw, sw, w - sw, h - sw);
-            float rad = w * 0.15f;
+            float sw = w * (foco ? 0.06f : 0.02f);
             p.setStyle(Paint.Style.FILL);
-            p.setColor(foco ? 0x44FFFFFF : 0xFF0A0A0A);
-            c.drawRoundRect(r, rad, rad, p);
+            p.setColor(foco ? 0x55FFFFFF : 0xFF1A1A1A);
+            c.drawCircle(cx, cy, w / 2f - sw, p);
             p.setStyle(Paint.Style.STROKE);
             p.setStrokeWidth(sw);
-            p.setColor(foco ? Color.WHITE : 0xFFDDDDDD);
-            c.drawRoundRect(r, rad, rad, p);
+            p.setColor(foco ? Color.WHITE : 0xFF666666);
+            c.drawCircle(cx, cy, w / 2f - sw, p);
 
+            p.setStyle(Paint.Style.FILL);
             p.setColor(Color.WHITE);
             if (tipo == 0) {
-                float s = w * 0.195f, g = w * 0.065f;
-                float o = (w - (3 * s + 2 * g)) / 2f;
-                p.setStyle(Paint.Style.FILL);
-                for (int i = 0; i < 3; i++) {
-                    for (int j = 0; j < 3; j++) {
-                        float x = o + i * (s + g), y = o + j * (s + g);
-                        c.drawRoundRect(new RectF(x, y, x + s, y + s), s * 0.3f, s * 0.3f, p);
-                    }
+                float r = w * 0.052f, step = w * 0.17f;
+                for (int i = -1; i <= 1; i++) {
+                    for (int j = -1; j <= 1; j++) c.drawCircle(cx + i * step, cy + j * step, r, p);
                 }
             } else {
-                float[] ys = { 0.27f, 0.5f, 0.73f };
-                float[] xs = { 0.66f, 0.33f, 0.58f };
-                float hs = w * 0.08f;
-                for (int k = 0; k < 3; k++) {
-                    float y = h * ys[k], x = w * xs[k];
-                    p.setStyle(Paint.Style.STROKE);
-                    p.setStrokeWidth(w * 0.03f);
-                    p.setColor(Color.WHITE);
-                    c.drawLine(w * 0.17f, y, w * 0.83f, y, p);
-                    RectF hr = new RectF(x - hs, y - hs, x + hs, y + hs);
-                    p.setStyle(Paint.Style.FILL);
-                    p.setColor(0xFF0A0A0A);
-                    c.drawRoundRect(hr, hs * 0.35f, hs * 0.35f, p);
-                    p.setStyle(Paint.Style.STROKE);
-                    p.setColor(Color.WHITE);
-                    c.drawRoundRect(hr, hs * 0.35f, hs * 0.35f, p);
+                float R = w * 0.22f, tw = w * 0.11f, tl = w * 0.10f;
+                Path g = new Path();
+                g.addCircle(cx, cy, R, Path.Direction.CW);
+                Path dente = new Path();
+                dente.addRoundRect(new RectF(-tw / 2f, -(R + tl), tw / 2f, -(R - w * 0.03f)),
+                        tw * 0.25f, tw * 0.25f, Path.Direction.CW);
+                Matrix m = new Matrix();
+                for (int k = 0; k < 8; k++) {
+                    m.reset();
+                    m.postRotate(k * 45f);
+                    m.postTranslate(cx, cy);
+                    g.addPath(dente, m);
                 }
+                g.addCircle(cx, cy, w * 0.095f, Path.Direction.CCW);
+                g.setFillType(Path.FillType.WINDING);
+                c.drawPath(g, p);
             }
         }
     }
