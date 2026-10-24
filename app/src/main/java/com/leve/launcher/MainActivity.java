@@ -66,7 +66,7 @@ public class MainActivity extends Activity {
     // ou segurar OK sobre um favorito/app para trocar, remover ou mover).
     private static final String FAVORITOS_PADRAO =
             "com.google.android.youtube.tv|com.google.android.youtube.googletv,"
-            + "com.global.unitviptv,com.spotify.music";
+            + "com.global.unitviptv,com.uni.tv.apk,com.spotify.music";
     private static final int SLOTS = 5;
     // Todo app que tiver banner usa o banner no dock; quem nao tiver aparece com icone e nome.
     // Apps que nao aparecem na grade "Aplicativos"
@@ -157,7 +157,7 @@ public class MainActivity extends Activity {
         hora.setFormat24Hour("HH:mm");
         hora.setFormat12Hour("HH:mm");
         hora.setTextColor(Color.WHITE);
-        hora.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(185));
+        hora.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(100));
         hora.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
         hora.setIncludeFontPadding(false);
         FrameLayout.LayoutParams lh = new FrameLayout.LayoutParams(-2, -2);
@@ -169,7 +169,7 @@ public class MainActivity extends Activity {
         data.setFormat24Hour("dd/MM/yyyy");
         data.setFormat12Hour("dd/MM/yyyy");
         data.setTextColor(Color.WHITE);
-        data.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(50));
+        data.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(30));
         data.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         data.setIncludeFontPadding(false);
         FrameLayout.LayoutParams ld = new FrameLayout.LayoutParams(-2, -2);
@@ -182,7 +182,7 @@ public class MainActivity extends Activity {
         climaBox.setOrientation(LinearLayout.HORIZONTAL);
         climaBox.setGravity(Gravity.CENTER_VERTICAL);
         climaIcone = new TextView(this);
-        climaIcone.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(105));
+        climaIcone.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(80));
         climaIcone.setIncludeFontPadding(false);
         climaIcone.setTextColor(Color.WHITE);
         LinearLayout col = new LinearLayout(this);
@@ -191,11 +191,11 @@ public class MainActivity extends Activity {
         TextView hoje = new TextView(this);
         hoje.setText("Hoje");
         hoje.setTextColor(Color.WHITE);
-        hoje.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(40));
+        hoje.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(20));
         hoje.setIncludeFontPadding(false);
         climaTemp = new TextView(this);
         climaTemp.setTextColor(Color.WHITE);
-        climaTemp.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(100));
+        climaTemp.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(80));
         climaTemp.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
         climaTemp.setIncludeFontPadding(false);
         col.addView(hoje);
@@ -249,7 +249,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(texto);
         t.setTextColor(0xFFEEEEEE);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(27));
+        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(18));
         t.setIncludeFontPadding(false);
         t.setPadding(0, px(14), 0, 0);
         c.addView(t);
