@@ -68,13 +68,7 @@ public class MainActivity extends Activity {
             "com.google.android.youtube.tv|com.google.android.youtube.googletv,"
             + "com.global.unitviptv,com.spotify.music";
     private static final int SLOTS = 5;
-    // Apps que aparecem com o BANNER no dock. Qualquer outro app aparece com icone e nome.
-    private static final String[] BANNER_PKGS = {
-            "com.google.android.youtube.tv",
-            "com.google.android.youtube.googletv",
-            "com.global.unitviptv",
-            "com.spotify.music"
-    };
+    // Todo app que tiver banner usa o banner no dock; quem nao tiver aparece com icone e nome.
     // Apps que nao aparecem na grade "Aplicativos"
     private static final String[] HIDDEN = {
             "com.droidlogic.mboxlauncher",
@@ -613,7 +607,7 @@ public class MainActivity extends Activity {
                     if (li == null) li = pm.getLaunchIntentForPackage(p);
                     if (li != null) {
                         intents[i] = li;
-                        fotos[i] = montarTile(pm, p);
+                        fotos[i] = montarTile(pm, p, li);
                     }
                 }
 
@@ -648,16 +642,15 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** Banner (YouTube, UniTV, Spotify) ou icone + nome (demais apps), com cantos arredondados. */
-    private Bitmap montarTile(PackageManager pm, String pkg) {
+    /** Banner do app (se tiver) ou icone + nome, com cantos arredondados. */
+    private Bitmap montarTile(PackageManager pm, String pkg, Intent launch) {
         int w = px(230), h = px(122);
         Bitmap src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(src);
         try {
             Drawable d = null;
-            for (String b : BANNER_PKGS) {
-                if (b.equals(pkg)) { d = pm.getApplicationBanner(pkg); break; }
-            }
+            try { d = pm.getActivityBanner(launch); } catch (Exception ignored) { }
+            if (d == null) d = pm.getApplicationBanner(pkg);
             if (d != null) {
                 d.setBounds(0, 0, w, h);
                 d.draw(c);
